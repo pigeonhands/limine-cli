@@ -1,16 +1,23 @@
 [package]
 name = "limine-cli"
-version = "0.1.0"
+version = "0.0.1"
 edition = "2024"
+description = "A tool for managing limine"
+license = "MPL-2.0"
+readme = "README.md"
 
 [dependencies]
+bitflags = "2.13.0"
 clap = { version = "4.6.1", features = ["derive"] }
 humantime-serde = "1.1.1"
+#libblkid-rs = "0.4.2"
 nix = { version = "0.31.3", features = ["mount"] }
 owo-colors = "4.3.0"
 regex = "1.12.3"
 serde = { version = "1.0.228", features = ["derive"] }
 smart-default = "0.7.1"
 strum = { version = "0.28.0", features = ["derive"] }
+tabled = { version = "0.21.0", features = ["ansi"] }
 thiserror = "2.0.18"
 toml = "1.1.2"
+uuid = { version = "1.23.3", features = ["v4"] }

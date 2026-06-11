@@ -39,16 +39,18 @@ pub enum FSType {
 #[derive(Debug, Clone)]
 pub struct MountedPartition {
     #[allow(unused)]
-    fs_type: FSType,
-    device: PathBuf,
-    mount_location: PathBuf,
-    mounted: bool,
+    pub fs_type: FSType,
+    pub device: PathBuf,
+    pub mount_location: PathBuf,
+    pub mounted: bool,
 }
 
 impl MountedPartition {
     pub fn mount(fs_type: FSType, device: &Path, mount_location: impl AsRef<Path>) -> Result<Self> {
         use nix::mount::{MsFlags, mount};
         let mount_location = mount_location.as_ref();
+
+        fs::create_dir(mount_location).ok();
 
         mount(
             Some(device),

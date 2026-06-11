@@ -2,7 +2,7 @@ use std::{io, path::PathBuf};
 
 use thiserror::Error;
 
-use crate::fs::{device::DeviceError, mount::MountError};
+use crate::fs::{boot::BootError, device::DeviceError, efi::EfiError, mount::MountError};
 
 pub type Result<T> = core::result::Result<T, LimeineCliError>;
 
@@ -34,4 +34,10 @@ pub enum LimeineCliError {
 
     #[error("Device error: {0}")]
     DeviceError(#[from] DeviceError),
+
+    #[error("Boot partition error: {0}")]
+    BootError(#[from] BootError),
+
+    #[error("Efi error {0}")]
+    EfiError(#[from] EfiError),
 }

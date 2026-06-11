@@ -12,16 +12,21 @@ pub struct Args {
 
     /// Use the default configuration for liminecli
     /// even if there is a configuration file avalible.
-    #[arg(short, long, default_value_t = false)]
+    #[arg(short = 'D', long, default_value_t = false)]
     pub default_configuration: bool,
 
-    /// Path to device to install limine to
+    /// Path to vfat device to install limine to
     /// and where to write limine configuration.
-    /// (e.g. /dev/sda1)
+    /// (e.g. /dev/sda1). This will update the in-memory
+    /// config (generate-cli-config will write it to disk)
     ///
-    /// Must be a VFAT partiton.
+    ///
+    /// If this flag is not set, liminecli will
+    /// look for a boot partition on the same device
+    /// as the root partition. If there is a single
+    /// boot partition, it will use that.
     #[arg(short, long)]
-    pub esp_device: Option<PathBuf>,
+    pub device_path: Option<PathBuf>,
 
     #[command(subcommand)]
     pub command: Command,
@@ -40,13 +45,15 @@ pub enum Command {
     Install(InstallArgs),
     /// Generate limine config.
     Update,
-    /// Write the current limeinecli toml configuration to file.
+    /// Write the current limine-cli toml configuration to file.
     /// If there is already a valid configutaion in the path,
     /// this will format. If there is no config, this will
     /// generate a default configuration.
     GenerateCliConfig,
     /// Print the liminecli config being used.
     PrintConfig,
+    /// Show information that will be used by limine-cli
+    Discover,
 }
 
 #[derive(Debug, Clone, Copy, ValueEnum, EnumString, AsRefStr)]

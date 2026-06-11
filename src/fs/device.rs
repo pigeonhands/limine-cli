@@ -10,7 +10,7 @@ use thiserror::Error;
 const BLOCK_DEVICE_PREFIX: &str = "/sys/block";
 const BLOCK_CLASS_DEVICE_PREFIX: &str = "/sys/class/block";
 const DISK_DEVICE_PREFIX: &str = "/dev/disk";
-const DEVICE_PREFIX: &str = "/dev";
+pub const DEVICE_PREFIX: &str = "/dev";
 
 const DISK_ITER_PARTITONS_DIR: &str = "/dev/disk/by-partuuid";
 
@@ -46,6 +46,7 @@ pub enum DeviceType {
 }
 
 /// A device that lives in /sys/class/block
+#[derive(Debug)]
 pub struct BlockDevice {
     pub path: PathBuf,
     pub name: String,
@@ -62,8 +63,27 @@ impl BlockDevice {
 
         Ok(items.filter_map(|f| {
             let device_dir = f.ok()?;
-            Some(Self::from_block_path(device_dir.path()))
+            Some(Self::from_disk_path(device_dir.path()))
         }))
+    }
+
+    pub fn from_part_uuid(uuid: uuid::Uuid) -> Result<Self> {
+        Self::from_disk_path(Path::new(DISK_ITER_PARTITONS_DIR).join(uuid.to_string()))
+    }
+
+    pub fn is_vfat(&self) -> Result<bool> {
+        use io::Read;
+
+        let device = Path::new(DEVICE_PREFIX).join(&self.name);
+        let mut f = File::open(device)?;
+        let mut buf = [0u8; 512];
+        f.read_exact(&mut buf)?;
+
+        if buf[0x1FE] != 0x55 || buf[0x1FF] != 0xAA {
+            return Ok(false);
+        }
+
+        Ok(&buf[0x52..0x5A] == b"FAT32   " || buf[0x36..0x3E].starts_with(b"FAT"))
     }
     pub fn from_path(path: impl AsRef<Path>) -> Result<Self> {
         let path = path.as_ref();
@@ -102,7 +122,7 @@ impl BlockDevice {
 
         Ok(
             Self::from_block_path(Path::new(BLOCK_CLASS_DEVICE_PREFIX).join(base_name))
-                .map_err(|_| DeviceError::InvalidBlockDevicePath(path.to_path_buf()))?,
+                .map_err(|_| DeviceError::InvalidDevicePath(path.to_path_buf()))?,
         )
     }
 
@@ -121,7 +141,9 @@ impl BlockDevice {
             Err(DeviceError::InvalidBlockDevicePath(path.to_path_buf()))?;
         }
 
-        Ok(Self::parse_device(&path)
+        let full_device_path = fs::canonicalize(&path)?;
+
+        Ok(Self::parse_device(&full_device_path)
             .map_err(|e| DeviceError::InvalidBlockDevice(path.to_path_buf(), e))?)
     }
 

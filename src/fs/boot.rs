@@ -1,11 +1,9 @@
-use std::array::IntoIter;
-use std::fs;
 use std::path::{Path, PathBuf};
-use std::str::{FromStr, Lines};
 
-use nix::libc::FS;
+use thiserror::Error;
 
-use crate::fs::mount::{FSType, MountedPartition};
+use crate::fs::device::{BlockDevice, DEVICE_PREFIX};
+use crate::fs::mount::{FSType, Mount, MountedPartition};
 use crate::{LimeineCliError, Result};
 
 /// Default configuration paths reitive to
@@ -13,13 +11,13 @@ use crate::{LimeineCliError, Result};
 ///
 /// First item is the default path.
 pub static LIMINE_CONFIG_PATHS: &[&str] = &[
-    "/limine.conf",
-    "/EFI/limine/limine.conf",
-    "/EFI/LIMINE/limine.conf",
-    "/EFI/BOOT/limine.conf",
-    "/boot/limine/limine.conf",
-    "/boot/limine.conf",
-    "/limine/limine.conf",
+    "limine.conf",
+    "EFI/limine/limine.conf",
+    "EFI/LIMINE/limine.conf",
+    "EFI/BOOT/limine.conf",
+    "boot/limine/limine.conf",
+    "boot/limine.conf",
+    "limine/limine.conf",
 ];
 
 /// Default EFI module paths reitive to
@@ -31,16 +29,25 @@ pub static LIMINE_CONFIG_PATHS: &[&str] = &[
 ///     included because it may not be
 ///     limine.
 pub static LIMINE_UEFI_PATHS: &[&str] = &[
-    "/EFI/limine/limine_x64.efi",
-    "/EFI/LIMINE/limine_x64.efi",
-    "/EFI/LIMINE/BOOTX64.EFI",
-    "/EFI/BOOT/limine_x64.efi",
+    "EFI/limine/limine_x64.efi",
+    "EFI/LIMINE/limine_x64.efi",
+    "EFI/LIMINE/BOOTX64.EFI",
+    "EFI/BOOT/limine_x64.efi",
 ];
 
 /// Location for liminecli to mount devices
 /// when searching for limine
 pub static MOUNT_DIR: &str = "/run/liminecli";
 
+#[derive(Debug, Error)]
+pub enum BootError {
+    #[error("Device with root mount contains multiple boot parttions. please specify device.")]
+    MultipleBootPartitions,
+
+    #[error("Failed to find device for limine")]
+    FailedDiscovery,
+}
+#[derive(Debug, Clone)]
 pub enum EspRoot {
     Path(PathBuf),
     Mounted(MountedPartition),
@@ -55,6 +62,7 @@ impl AsRef<Path> for EspRoot {
     }
 }
 
+#[derive(Debug, Clone)]
 pub struct LiminePaths {
     pub esp_root: EspRoot,
     pub config_path: PathBuf,
@@ -67,13 +75,61 @@ impl LiminePaths {
             return Ok(p);
         }
 
-        todo!()
+        if let Some(from_root_boot_partition) = Self::find_root_boot_partition()? {
+            return Ok(from_root_boot_partition);
+        }
+
+        Err(LimeineCliError::BootError(BootError::FailedDiscovery))
+    }
+
+    // try and find a single boot partition on the same device as
+    // the root filesystem is mounted.
+    pub fn find_root_boot_partition() -> Result<Option<Self>> {
+        let mounts = Mount::get_mounts()?;
+        let root_mount_block_device = {
+            let root_device = mounts
+                .iter()
+                .filter(|m| m.mount_location == "/")
+                .map(|m| m.device)
+                .next();
+            if let Some(root_device) = root_device {
+                root_device
+            } else {
+                return Ok(None);
+            }
+        };
+
+        let root_device = BlockDevice::from_device_path(root_mount_block_device)?;
+
+        let root_parent = root_device.path.parent();
+        let partitions = BlockDevice::enumerate_partitions()?;
+        let mut root_boot_partition = None;
+        for partition in partitions {
+            let partition = partition?;
+
+            if partition.path.parent() != root_parent {
+                continue;
+            }
+            if partition.is_vfat()? {
+                if root_boot_partition.is_some() {
+                    Err(BootError::MultipleBootPartitions)?;
+                }
+                root_boot_partition = Some(partition)
+            }
+        }
+
+        if let Some(root_boot_partition) = root_boot_partition {
+            let device = Path::new(DEVICE_PREFIX).join(root_boot_partition.name);
+            Self::from_device(FSType::VFat, &device, false)
+        } else {
+            Ok(None)
+        }
     }
 
     pub fn try_from_dir(base: impl AsRef<Path>) -> Result<Option<Self>> {
         let base = base.as_ref();
 
-        Ok(find_limine_files(base, false)
+        Ok(find_limine_files(base, true)
             .ok()
             .map(|(config_path, efi_path)| Self {
                 config_path,
@@ -81,10 +137,10 @@ impl LiminePaths {
                 esp_root: EspRoot::Path(base.into()),
             }))
     }
-    pub fn try_from_device(fs_type: FSType, device: &Path) -> Result<Option<Self>> {
+    pub fn from_device(fs_type: FSType, device: &Path, must_exist: bool) -> Result<Option<Self>> {
         let mount = MountedPartition::mount(fs_type, device, MOUNT_DIR)?;
 
-        Ok(find_limine_files(mount.path(), false)
+        Ok(find_limine_files(mount.path(), must_exist)
             .ok()
             .map(|(config_path, efi_path)| Self {
                 config_path,
@@ -98,7 +154,7 @@ fn find_limine_files(base: &Path, must_exist: bool) -> Result<(PathBuf, PathBuf)
         for file in files {
             let path = base.join(file);
             if path.exists() {
-                return Some(path);
+                return Some(file.into());
             }
         }
         None

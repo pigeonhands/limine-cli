@@ -13,7 +13,7 @@ use crate::{LimeineCliError, Result};
 #[derive(SmartDefault, Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
     pub limine_config_location: Option<PathBuf>,
-    pub limemine_block_location: Option<PathBuf>,
+    pub limemine_block_device: Option<PathBuf>,
     pub limine: LimineConfig,
 }
 
