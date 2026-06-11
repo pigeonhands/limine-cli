@@ -350,7 +350,7 @@ pub struct EfiBootDevice {
     pub boot_num: u16,
     pub attrs: EfiVarAttrs,
     pub load_options: EfiLoadOptionAttrs,
-    pub path: PathBuf,
+    pub firmware_path: PathBuf,
     pub harddrive: Option<DevicePathNodeHardDrive>,
 }
 
@@ -382,7 +382,7 @@ impl EfiBootDevice {
             harddrive,
             attrs: var.attrs,
             load_options: load_option.attributes,
-            path: PathBuf::from(String::from_utf16_lossy(&str_buffer)),
+            firmware_path: PathBuf::from(String::from_utf16_lossy(&str_buffer)),
         })
     }
 }

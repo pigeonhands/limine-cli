@@ -3,7 +3,8 @@ use std::path::{Path, PathBuf};
 use thiserror::Error;
 
 use crate::fs::device::{BlockDevice, DEVICE_PREFIX};
-use crate::fs::mount::{FSType, Mount, MountedPartition};
+use crate::fs::efi::EfiBootOrder;
+use crate::fs::mount::{FSType, Mount, MountFile, MountedPartition};
 use crate::{LimeineCliError, Result};
 
 /// Default configuration paths reitive to
@@ -49,16 +50,31 @@ pub enum BootError {
 }
 #[derive(Debug, Clone)]
 pub enum EspRoot {
-    Path(PathBuf),
+    Path {
+        mount_path: PathBuf,
+        device: PathBuf,
+    },
     Mounted(MountedPartition),
 }
 
 impl AsRef<Path> for EspRoot {
     fn as_ref(&self) -> &Path {
         match self {
-            Self::Path(p) => p,
+            Self::Path { mount_path, .. } => mount_path,
             Self::Mounted(m) => m.path(),
         }
+    }
+}
+
+impl EspRoot {
+    pub fn device(&self) -> &Path {
+        match self {
+            Self::Path { device, .. } => device,
+            Self::Mounted(m) => &m.device,
+        }
+    }
+    pub fn block_device(&self) -> Result<BlockDevice> {
+        BlockDevice::from_device_path(self.device())
     }
 }
 
@@ -71,20 +87,49 @@ pub struct LiminePaths {
 
 impl LiminePaths {
     pub fn discover() -> Result<Self> {
-        if let Some(p) = Self::try_from_dir("/boot")? {
+        if let Some(p) = Self::try_from_mount("/boot")? {
             return Ok(p);
         }
 
-        if let Some(from_root_boot_partition) = Self::find_root_boot_partition()? {
+        if let Some(from_efi_boot_entry) = Self::find_from_efi_boot_entry()? {
+            return Ok(from_efi_boot_entry);
+        }
+
+        if let Some(from_root_boot_partition) = Self::find_from_root_boot_partition()? {
             return Ok(from_root_boot_partition);
         }
 
         Err(LimeineCliError::BootError(BootError::FailedDiscovery))
     }
 
+    pub fn find_from_efi_boot_entry() -> Result<Option<Self>> {
+        let boot_order = EfiBootOrder::read_boot_order()?;
+
+        for item in boot_order.iter() {
+            let boot_device = match item.try_read_boot_device() {
+                Ok(b) => b,
+                Err(_) => continue,
+            };
+            let boot_device_hard_drive = match boot_device.harddrive {
+                Some(s) => s,
+                None => continue,
+            };
+            let boot_device_uuid = match boot_device_hard_drive.partuuid {
+                Some(uuid) => uuid,
+                None => continue,
+            };
+            let block_device = BlockDevice::from_part_uuid(boot_device_uuid)?;
+
+            let device = Path::new(DEVICE_PREFIX).join(block_device.name);
+            return Self::from_device(FSType::VFat, &device, false);
+        }
+
+        Ok(None)
+    }
+
     // try and find a single boot partition on the same device as
     // the root filesystem is mounted.
-    pub fn find_root_boot_partition() -> Result<Option<Self>> {
+    pub fn find_from_root_boot_partition() -> Result<Option<Self>> {
         let mounts = Mount::get_mounts()?;
         let root_mount_block_device = {
             let root_device = mounts
@@ -126,55 +171,81 @@ impl LiminePaths {
         }
     }
 
-    pub fn try_from_dir(base: impl AsRef<Path>) -> Result<Option<Self>> {
+    pub fn try_from_mount(base: impl AsRef<Path>) -> Result<Option<Self>> {
         let base = base.as_ref();
+        let mount_file = MountFile::read()?;
+        let Some(target_mount) = mount_file
+            .iter()
+            .filter(|m| m.mount_location == base)
+            .next()
+        else {
+            return Ok(None);
+        };
 
-        Ok(find_limine_files(base, true)
-            .ok()
-            .map(|(config_path, efi_path)| Self {
+        Ok(
+            find_limine_files(base, true)?.map(|(config_path, efi_path)| Self {
                 config_path,
                 efi_path,
-                esp_root: EspRoot::Path(base.into()),
-            }))
+                esp_root: EspRoot::Path {
+                    mount_path: target_mount.mount_location.into(),
+                    device: target_mount.device.into(),
+                },
+            }),
+        )
     }
     pub fn from_device(fs_type: FSType, device: &Path, must_exist: bool) -> Result<Option<Self>> {
         let mount = MountedPartition::mount(fs_type, device, MOUNT_DIR)?;
 
-        Ok(find_limine_files(mount.path(), must_exist)
-            .ok()
-            .map(|(config_path, efi_path)| Self {
+        Ok(
+            find_limine_files(mount.path(), must_exist)?.map(|(config_path, efi_path)| Self {
                 config_path,
                 efi_path,
                 esp_root: EspRoot::Mounted(mount),
-            }))
+            }),
+        )
     }
 }
-fn find_limine_files(base: &Path, must_exist: bool) -> Result<(PathBuf, PathBuf)> {
-    fn find_file(base: &Path, files: &[&str]) -> Option<PathBuf> {
+fn find_limine_files(base: &Path, must_exist: bool) -> Result<Option<(PathBuf, PathBuf)>> {
+    match base.metadata() {
+        _ => {}
+    };
+
+    fn find_file(base: &Path, files: &[&str]) -> Result<Option<PathBuf>> {
         for file in files {
             let path = base.join(file);
-            if path.exists() {
-                return Some(file.into());
+            let metadata = match path.metadata() {
+                Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => {
+                    return Err(LimeineCliError::NoPermission {
+                        path: base.into(),
+                        error: e,
+                    });
+                }
+                Ok(m) => m,
+                Err(_) => continue,
+            };
+
+            if metadata.is_file() {
+                return Ok(Some(file.into()));
             }
         }
-        None
+        Ok(None)
     }
 
     let res = match (
         must_exist,
-        find_file(base, LIMINE_CONFIG_PATHS),
-        find_file(base, LIMINE_UEFI_PATHS),
+        find_file(base, LIMINE_CONFIG_PATHS)?,
+        find_file(base, LIMINE_UEFI_PATHS)?,
     ) {
         (_, Some(c), Some(e)) => (c, e),
-        (_, Some(c), None) => (c, base.join(LIMINE_UEFI_PATHS[0])),
-        (_, None, Some(e)) => (base.join(LIMINE_CONFIG_PATHS[0]), e),
+        (_, Some(c), None) => (c, Path::new(LIMINE_UEFI_PATHS[0]).into()),
+        (_, None, Some(e)) => (Path::new(LIMINE_CONFIG_PATHS[0]).into(), e),
         (false, _, _) => (
             base.join(LIMINE_CONFIG_PATHS[0]),
             base.join(LIMINE_UEFI_PATHS[0]),
         ),
         (_, _, _) => {
-            return Err(LimeineCliError::NoConfigLocation);
+            return Ok(None);
         }
     };
-    Ok(res)
+    Ok(Some(res))
 }

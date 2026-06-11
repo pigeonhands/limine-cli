@@ -8,6 +8,8 @@ pub type Result<T> = core::result::Result<T, LimeineCliError>;
 
 #[derive(Debug, Error)]
 pub enum LimeineCliError {
+    #[error("Failed to aquire lockfile: {0}")]
+    AlreadyRunning(PathBuf),
     #[error("IO Error: {0}")]
     IOError(#[from] io::Error),
 
@@ -38,6 +40,6 @@ pub enum LimeineCliError {
     #[error("Boot partition error: {0}")]
     BootError(#[from] BootError),
 
-    #[error("Efi error {0}")]
+    #[error("Efi error: {0}")]
     EfiError(#[from] EfiError),
 }

@@ -33,7 +33,7 @@ pub enum DeviceError {
     InvalidBlockDevice(PathBuf, io::Error),
 }
 
-#[derive(Debug, Copy, Clone, Default, EnumString)]
+#[derive(Debug, Copy, Clone, Default, EnumString, PartialEq, Eq)]
 pub enum DeviceType {
     #[default]
     Other,
@@ -46,7 +46,7 @@ pub enum DeviceType {
 }
 
 /// A device that lives in /sys/class/block
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 pub struct BlockDevice {
     pub path: PathBuf,
     pub name: String,

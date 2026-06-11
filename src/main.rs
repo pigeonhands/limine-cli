@@ -9,8 +9,12 @@ use config::Config;
 
 pub use error::{LimeineCliError, Result};
 
+use crate::fs::LockFile;
+
 fn main() -> Result<()> {
     let args = Args::get_args();
+
+    let _lock = LockFile::aquire()?;
 
     let config = {
         let mut config = if args.default_configuration {

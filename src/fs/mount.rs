@@ -6,7 +6,7 @@ use std::{
 
 use strum::{AsRefStr, EnumString};
 
-use crate::Result;
+use crate::{LimeineCliError, Result};
 
 use thiserror::Error;
 
@@ -50,7 +50,15 @@ impl MountedPartition {
         use nix::mount::{MsFlags, mount};
         let mount_location = mount_location.as_ref();
 
-        fs::create_dir(mount_location).ok();
+        match fs::create_dir(mount_location) {
+            Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => {
+                return Err(LimeineCliError::NoPermission {
+                    path: mount_location.into(),
+                    error: e,
+                });
+            }
+            _ => {}
+        };
 
         mount(
             Some(device),
@@ -70,15 +78,17 @@ impl MountedPartition {
     }
 
     pub fn unmount(&mut self) -> Result<()> {
-        use nix::mount::umount;
+        use nix::mount::{MntFlags, umount2};
         if !self.mounted {
             return Ok(());
         }
 
-        umount(&self.mount_location).map_err(|e| MountError::FailedToUnMountDevice {
-            device: self.device.clone(),
-            mount_path: self.mount_location.clone(),
-            error_no: e,
+        umount2(&self.mount_location, MntFlags::MNT_DETACH).map_err(|e| {
+            MountError::FailedToUnMountDevice {
+                device: self.device.clone(),
+                mount_path: self.mount_location.clone(),
+                error_no: e,
+            }
         })?;
         self.mounted = false;
         Ok(())
