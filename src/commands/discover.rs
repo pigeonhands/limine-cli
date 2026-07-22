@@ -1,10 +1,10 @@
-use std::fmt::format;
 use std::path::{Path, PathBuf};
 
 use crate::Result;
 use crate::fs::boot::EspRoot;
 use crate::fs::device::BlockDevice;
-use crate::fs::efi::EfiBootDevice;
+use crate::fs::efi::{EfiBootDevice, EfiBootOrderItem};
+use crate::fs::mount::FSType;
 use crate::{
     config::Config,
     fs::{boot::LiminePaths, efi::EfiBootOrder},
@@ -12,15 +12,12 @@ use crate::{
 use owo_colors::OwoColorize;
 use tabled::{Table, Tabled};
 
-pub fn run(_config: &Config) -> Result<()> {
-    let paths = print_target_limine_install_dir()?;
+pub fn run(config: &Config) -> Result<()> {
+    let paths = print_target_limine_install_dir(config)?;
     print_efi_boot_order(paths.as_ref());
     Ok(())
 }
 
-fn option_or_empty_string<T: ToString>(item: &Option<T>) -> String {
-    item.as_ref().map(|x| x.to_string()).unwrap_or_default()
-}
 fn print_efi_boot_order(paths: Option<&LiminePaths>) {
     #[derive(Tabled)]
     struct BootOrderItem {
@@ -30,11 +27,11 @@ fn print_efi_boot_order(paths: Option<&LiminePaths>) {
         #[tabled(rename = "Efi Path")]
         pub path: String,
 
-        #[tabled(rename = "Part Uuid", display("option_or_empty_string"))]
-        pub device_part_uuid: Option<String>,
+        #[tabled(rename = "Part Uuid")]
+        pub device_part_uuid: String,
 
-        #[tabled(rename = "Device path", display("option_or_empty_string"))]
-        pub device_path: Option<String>,
+        #[tabled(rename = "Device path")]
+        pub device_path: String,
     }
 
     println!("{}", "### Efi boot Items (by boot order) ###".green());
@@ -52,56 +49,70 @@ fn print_efi_boot_order(paths: Option<&LiminePaths>) {
         }
     };
 
+    fn boot_order_items_for_boot_device(
+        limine_paths: Option<&LiminePaths>,
+        item: &EfiBootOrderItem,
+    ) -> Result<Option<(String, String, String, bool)>> {
+        let boot_device = item.try_read_boot_device()?;
+        let mut current_boot_device = false;
+        let boot_device_part_uuid =
+            match boot_device.harddrive.as_ref().map(|x| x.partuuid).flatten() {
+                Some(uuid) => uuid,
+                None => {
+                    return Ok(Some((
+                        "no part uuid".to_string(),
+                        "no device".to_string(),
+                        "no path".to_string(),
+                        false,
+                    )));
+                }
+            };
+
+        let boot_block_device = BlockDevice::from_part_uuid(boot_device_part_uuid);
+        if let Ok(ref device) = boot_block_device
+            && is_limine_boot_entry(&boot_device, device, limine_paths)
+        {
+            current_boot_device = true;
+        }
+        let device_display = match boot_block_device {
+            Ok(device) => device.path.display().to_string(),
+            Err(e) => {
+                format!("{} {}", "Error boot block device: ".bright_red(), e.red())
+            }
+        };
+
+        Ok(Some((
+            boot_device_part_uuid.blue().to_string(),
+            device_display,
+            boot_device.firmware_path.display().magenta().to_string(),
+            current_boot_device,
+        )))
+    }
+
     let mut table = Vec::new();
     for item in boot_order.iter() {
-        match item.try_read_boot_device() {
-            Ok(ref boot_device) => {
-                let mut current_boot_device = false;
-                let part_uuid = boot_device.harddrive.as_ref().map(|x| x.partuuid).flatten();
-                let (part_uuid, device_path) = match part_uuid {
-                    Some(uuid) => {
-                        let boot_block_device = BlockDevice::from_part_uuid(uuid);
-
-                        if let Ok(ref device) = boot_block_device
-                            && is_limine_boot_entry(&boot_device, device, paths)
-                        {
-                            current_boot_device = true;
-                        }
-                        let device_display = match boot_block_device {
-                            Ok(device) => device.path.display().to_string(),
-                            Err(e) => {
-                                format!("{} {}", "Error boot block device: ".bright_red(), e.red())
-                            }
-                        };
-                        (Some(uuid.blue().to_string()), Some(device_display))
-                    }
-                    None => (
-                        Some("no part uuid".to_string()),
-                        Some("no device".to_string()),
-                    ),
-                };
-                table.push(BootOrderItem {
-                    item: if current_boot_device {
-                        format!("{}*", item.0.green())
-                    } else {
-                        item.0.purple().to_string()
-                    },
-                    path: boot_device.firmware_path.display().magenta().to_string(),
-                    device_part_uuid: match part_uuid {
-                        Some(uuid) => Some(uuid.blue().to_string()),
-                        None => Some("no part uuid".to_string()),
-                    },
-                    device_path,
-                });
-            }
-            Err(_) => {
-                table.push(BootOrderItem {
-                    item: item.0.purple().to_string(),
-                    path: "Not a path boot item".to_string(),
-                    device_part_uuid: None,
-                    device_path: None,
-                });
-            }
+        if let Some((uuid_display, device_display, path_display, current_boot_device)) =
+            boot_order_items_for_boot_device(paths, &item)
+                .ok()
+                .flatten()
+        {
+            table.push(BootOrderItem {
+                item: if current_boot_device {
+                    format!("*{}*", item.0.green())
+                } else {
+                    item.0.purple().to_string()
+                },
+                path: path_display,
+                device_part_uuid: uuid_display,
+                device_path: device_display,
+            });
+        } else {
+            table.push(BootOrderItem {
+                item: item.0.purple().to_string(),
+                path: "Not a path boot item".to_string(),
+                device_part_uuid: String::new(),
+                device_path: String::new(),
+            });
         }
     }
 
@@ -110,7 +121,7 @@ fn print_efi_boot_order(paths: Option<&LiminePaths>) {
     println!();
 }
 
-fn print_target_limine_install_dir() -> Result<Option<LiminePaths>> {
+fn print_target_limine_install_dir(config: &Config) -> Result<Option<LiminePaths>> {
     #[derive(Tabled)]
     struct LimineInstallDirs {
         #[tabled(rename = "Item")]
@@ -132,7 +143,24 @@ fn print_target_limine_install_dir() -> Result<Option<LiminePaths>> {
             "will be created".yellow().to_string()
         }
     }
-    let paths = match LiminePaths::discover() {
+    let limine_paths = if let Some(limine_device) = &config.limemine_block_device {
+        match LiminePaths::from_device(FSType::VFat, limine_device, false).transpose() {
+            Some(paths) => paths,
+            None => {
+                println!(
+                    "{} {}",
+                    "Cannot use specified block device as lmine root: ".bright_red(),
+                    limine_device.display()
+                );
+
+                return Ok(None);
+            }
+        }
+    } else {
+        LiminePaths::discover()
+    };
+
+    let paths = match limine_paths {
         Ok(paths) => {
             let items = [
                 LimineInstallDirs {

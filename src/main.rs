@@ -22,7 +22,7 @@ fn main() -> Result<()> {
         } else {
             Config::from_file_or_default(&args.config_path)?
         };
-        if let Some(device_path) = args.device_path {
+        if let Some(device_path) = args.limine_device_path {
             config.limemine_block_device = Some(device_path.clone());
         }
         config

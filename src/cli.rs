@@ -4,7 +4,15 @@ use clap::{Parser, Subcommand, ValueEnum};
 use strum::{AsRefStr, EnumString};
 
 #[derive(Parser, Debug)]
-#[command(version, about, long_about = None)]
+#[command(
+    version, 
+    about = concat!(
+        env!("CARGO_PKG_DESCRIPTION"),
+        "\n\nRepository: ",
+        env!("CARGO_PKG_REPOSITORY")
+    ),
+    long_about = None,
+)]
 pub struct Args {
     /// Path to liminecli configuration path.
     #[arg(short, long, default_value = "/etc/liminecli.toml")]
@@ -26,7 +34,7 @@ pub struct Args {
     /// as the root partition. If there is a single
     /// boot partition, it will use that.
     #[arg(short, long)]
-    pub device_path: Option<PathBuf>,
+    pub limine_device_path: Option<PathBuf>,
 
     #[command(subcommand)]
     pub command: Command,
